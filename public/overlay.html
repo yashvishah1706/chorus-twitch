@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Chorus · Live overlay</title><style>
+*{box-sizing:border-box}body{margin:0;overflow:hidden;background:transparent;font-family:system-ui,sans-serif;color:#fff}canvas{display:block;width:100vw;height:100vh}#hud{position:absolute;left:24px;top:22px;display:flex;gap:12px;align-items:center;font-size:12px;letter-spacing:2px;text-shadow:0 2px 8px #000}#mode{color:#ffd580}#enable{position:absolute;inset:45% auto auto 50%;transform:translateX(-50%);border:1px solid #a2ffbd;border-radius:14px;padding:18px 28px;background:#102319;color:white;font:600 16px system-ui;cursor:pointer}#hint{position:absolute;bottom:14px;left:24px;font-size:11px;color:#bed5ce;text-shadow:0 1px 4px #000}
+</style></head><body><canvas id="stage"></canvas><div id="hud"><b>◉ CHORUS</b><span id="status">Connecting…</span><strong id="mode"></strong></div><button id="enable">Enable audio ↗</button><div id="hint">CHAT IS THE INSTRUMENT</div><script src="/client.js"></script><script>
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');
+let width=0,height=0,ratio=1,notes=[],queue=[],audio,master,compressor,state={bpm:120,volume:.45,muted:{},stopped:false,energy:0},active=new Set(),offset=0;
+function resize(){ratio=devicePixelRatio||1;width=innerWidth;height=innerHeight;canvas.width=width*ratio;canvas.height=height*ratio;ctx.setTransform(ratio,0,0,ratio,0,0)}addEventListener('resize',resize);resize();
+function clearAudio(){queue=[];notes=[];for(const voice of active){try{voice.osc.stop()}catch{}voice.gain.disconnect()}active.clear()}
+async function enableAudio(){try{if(!audio){audio=new AudioContext();master=audio.createGain();compressor=audio.createDynamicsCompressor();compressor.threshold.value=-14;compressor.ratio.value=8;master.connect(compressor).connect(audio.destination);master.gain.value=state.volume*.22;audio.onstatechange=()=>{document.querySelector('#enable').hidden=audio.state==='running'}}await audio.resume();document.querySelector('#enable').hidden=audio.state==='running'}catch{document.querySelector('#enable').textContent='Audio unavailable · click to retry'}}
+document.querySelector('#enable').onclick=enableAudio;
+let playingInstrument;
+function oscillator(type,freq,time,duration,volume,slide){
+ if(active.size>=96)return;
+ const osc=audio.createOscillator(),gain=audio.createGain();osc.type=type;osc.frequency.setValueAtTime(freq,time);if(slide)osc.frequency.exponentialRampToValueAtTime(slide,time+duration*.8);
+ gain.gain.setValueAtTime(.0001,time);gain.gain.exponentialRampToValueAtTime(Math.max(.0002,volume),time+.008);gain.gain.exponentialRampToValueAtTime(.0001,time+duration);
+ osc.connect(gain).connect(master);const voice={osc,gain,instrument:playingInstrument};active.add(voice);osc.onended=()=>{osc.disconnect();gain.disconnect();active.delete(voice)};osc.start(time);osc.stop(time+duration+.02);
+}
+function play(n,time){if(state.stopped||state.muted[n.instrument])return;playingInstrument=n.instrument;const f=440*2**((n.midi-69)/12),v=n.velocity*.25;
+ if(n.instrument==='kick')oscillator('sine',150,time,.22,.6,40);
+ else if(n.instrument==='snare'){oscillator('triangle',180,time,.13,.24,65);[733,1249,1921,2837].forEach(f=>oscillator('square',f,time,.08,.035,f*.53))}
+ else if(n.instrument==='hat')[4231,5879,7919,10391].forEach(f=>oscillator('square',f,time,.045,.025));
+ else if(n.instrument==='bell'){oscillator('sine',f,time,.65,v);oscillator('sine',f*2.76,time,.35,v*.35)}
+ else if(n.instrument==='fanfare'){oscillator('sawtooth',f,time,.36,v*.55);oscillator('triangle',f*2,time,.4,v*.45)}
+ else oscillator(n.instrument,f,time,n.duration,v*(n.instrument==='square'||n.instrument==='sawtooth'?.45:1));
+}
+setInterval(()=>{if(!audio||audio.state!=='running') {queue=queue.filter(n=>n.at>Date.now()+offset);return}const now=Date.now()+offset;while(queue.length&&queue[0].at<=now+120){const n=queue.shift();if(n.at>=now-70)play(n,audio.currentTime+Math.max(.005,(n.at-now)/1000))}},25);
+Chorus.connect(event=>{
+ if(event.type==='clock')offset=event.offset;
+ if(event.type==='connection'){document.querySelector('#status').textContent=event.connected?'CONNECTED':'RECONNECTING';if(!event.connected)clearAudio()}
+ if(event.type==='state'){state=event.state;document.querySelector('#mode').textContent=state.demo?'SIMULATED · DEMO':state.stopped?'PAUSED':'';if(master)master.gain.setTargetAtTime(state.volume*.22,audio.currentTime,.02);if(state.stopped)clearAudio();else for(const voice of active){if(state.muted[voice.instrument]){try{voice.osc.stop()}catch{}}} }
+ if(event.type==='panic'||event.type==='clear')clearAudio();
+ if(event.type==='note'&&!state.stopped){notes.push(event);queue.push(event);queue.sort((a,b)=>a.at-b.at);if(notes.length>1000)notes.shift();if(queue.length>1000)queue.shift()}
+});
+function frame(){ctx.clearRect(0,0,width,height);const now=Date.now()+offset,hit=height*.79,left=width*.08,right=width*.92;
+ ctx.strokeStyle='rgba(190,225,220,.12)';ctx.lineWidth=1;for(let i=0;i<8;i++){const x=left+(right-left)*i/7;ctx.beginPath();ctx.moveTo(x,90);ctx.lineTo(x,hit+30);ctx.stroke()}
+ const phase=(now%(60000/state.bpm))/(60000/state.bpm);ctx.strokeStyle=`rgba(162,255,189,${.25+(1-phase)*.5})`;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(left-20,hit);ctx.lineTo(right+20,hit);ctx.stroke();
+ ctx.font='11px system-ui';ctx.fillStyle='#b5d2c6';ctx.fillText(`${state.bpm} BPM  /  C MAJOR PENTATONIC`,left,hit+50);
+ notes=notes.filter(n=>now-n.at<500);
+ for(const n of notes){const x=left+(n.hue/360)*(right-left),y=hit-(n.at-now)/1300*(hit-60);if(y<0)continue;const opacity=now>n.at?Math.max(0,1-(now-n.at)/500):1;ctx.globalAlpha=opacity;const color=`hsl(${n.hue} 85% 72%)`;
+ ctx.fillStyle=color;ctx.shadowColor=color;ctx.shadowBlur=14;ctx.beginPath();ctx.roundRect(x-5,y-20,10,24,5);ctx.fill();ctx.shadowBlur=0;ctx.font='600 13px system-ui';ctx.fillText(n.name.slice(0,28),Math.min(width-230,x+14),y-4);ctx.font='9px system-ui';ctx.fillStyle=n.simulated?'#ffd580':'#d7e7e0';ctx.fillText(`${n.simulated?'SIMULATED · ':''}${n.instrument.toUpperCase()}`,Math.min(width-230,x+14),y+12);ctx.globalAlpha=1;
+ }requestAnimationFrame(frame)}frame();
+</script></body></html>
